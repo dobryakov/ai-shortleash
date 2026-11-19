@@ -7,8 +7,9 @@ description: >-
   delegate coding to the autonomous agent, «запусти агента», «сделай через
   shortleash/aider», or wants hands-off implement-from-acceptance-criteria
   work in the current or another project — even if that project has no
-  Shortleash sources. Do not re-implement the task yourself when the user
-  wants the agent to run it.
+  Shortleash sources.   Do not re-implement the task yourself when the user
+  wants the agent to run it. If the target repo is dirty, ask
+  commit-or-stash before running; if stashed, stash pop after the run.
 ---
 
 # Shortleash — автономный TDD-агент в чужом репо
@@ -23,14 +24,29 @@ description: >-
 | venv | `$SHORTLEASH_HOME/.venv/bin/agent-run` существует |
 | Docker-образ | `docker image inspect "${AGENT_RUN_SANDBOX_IMAGE:-dev-agent-sandbox:0.1.0}"` |
 | API key | `OPENROUTER_API_KEY` в env или в `$SHORTLEASH_HOME/.env` |
-| Целевой git | `--project` — git-репо с **чистым** working tree |
+| Целевой git | `--project` — git-репо; перед запуском дерево должно стать чистым (см. §1a) |
 
 ### Резолв `SHORTLEASH_HOME` (без хардкода путей машины)
 
+Никогда не вшивай абсолютные пути хоста (`/home/…`, `/Users/…`, буквы дисков) в скилл, правила, спеки или примеры — репозиторий публичный.
+
 1. Если задан env `SHORTLEASH_HOME` или `AGENT_RUN_HOME` — использовать его.
-2. Иначе, если скилл подключён симлинком из clone Shortleash:
-   `SHORTLEASH_HOME="$(cd "$(dirname "$(readlink -f "$HOME/.claude/skills/shortleash/SKILL.md)")/../.." && pwd)"`
-3. Иначе — спросить у пользователя путь к clone репозитория `shortleash`.
+2. Иначе найти clone Shortleash **обходом вверх** от реального файла скилла (после `readlink -f`), пока не появится маркер репо (`pyproject.toml` + каталог `sandbox/` + entrypoint `.venv/bin/agent-run` или `src/agent_run/`):
+
+```bash
+skill_md="$(readlink -f "${HOME}/.claude/skills/shortleash/SKILL.md")"
+d="$(dirname "$skill_md")"
+SHORTLEASH_HOME=""
+while [[ "$d" != "/" ]]; do
+  if [[ -f "$d/pyproject.toml" && -d "$d/sandbox" ]]; then
+    SHORTLEASH_HOME="$d"
+    break
+  fi
+  d="$(dirname "$d")"
+done
+```
+
+3. Если не нашли — спросить у пользователя путь к clone (не записывать его обратно в скилл/репо).
 
 Если venv/образа нет — сначала в `$SHORTLEASH_HOME`:
 
@@ -38,8 +54,6 @@ description: >-
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 docker build -t dev-agent-sandbox:0.1.0 sandbox/
 ```
-
-Если дерево грязное — **не** запускать: попросить пользователя закоммитить/stash (exit 20).
 
 ## Workflow
 
@@ -51,9 +65,28 @@ docker build -t dev-agent-sandbox:0.1.0 sandbox/
 
 Не расписывай архитектуру агента — сразу готовь задачу и запуск.
 
+### 1a. Грязное дерево — спросить commit или stash
+
+Перед `agent-run` проверь `git status --porcelain` в `--project`.
+
+Если дерево **чистое** — продолжай.
+
+Если **грязное** — **не** решай сам и **не** запускай агента. Покажи краткий список изменений и спроси пользователя одним вопросом:
+
+> В целевом репо есть незакоммиченные изменения. Закоммитить их или убрать в stash на время прогона?
+
+| Ответ | Действие |
+|---|---|
+| **commit** | закоммитить изменения (сообщение уточни, если не дали); дождись чистого дерева |
+| **stash** | `git stash push -u -m "shortleash: auto-stash before agent-run"` (или с явным pathspec, если пользователь указал что именно); запомни, что stash сделан тобой для этого прогона |
+| отказ / отмена | остановись, не запускай |
+
+После **stash** обязательно восстанови в конце прогона (SUCCESS, HITL или сбой CLI) — см. §5a.
+Не делай silent stash/commit без ответа пользователя. Не путай этот stash с чужими записями в `git stash list`: pop только тот, что создал этот прогон (по сообщению / `stash@{0}` сразу после push, если список не трогали).
+
 ### 2. Создай task.md
 
-Положи файл **вне** продукта или во временный путь, например `/tmp/shortleash-tasks/<slug>.md`.
+Положи файл **вне** продукта или во временный путь, например `"${TMPDIR:-/tmp}/shortleash-tasks/<slug>.md"` (вне продукта).
 
 Обязательные секции (заголовки точно такие):
 
@@ -88,8 +121,8 @@ set -a
 set +a
 
 "$SHORTLEASH_HOME/.venv/bin/agent-run" \
-  --project /ABS/PATH/TO/TARGET/REPO \
-  --task /ABS/PATH/TO/task.md \
+  --project "$TARGET_REPO" \
+  --task "$TASK_FILE" \
   --budget 0.50 \
   --max-iter 8
 ```
@@ -115,7 +148,7 @@ set +a
 | 13 | tests_not_runnable | починить формулировку критериев |
 | 14 | max_iter_exceeded | больше итераций / яснее задача |
 | 15 | tests_already_green | критерии уже выполнены или слишком слабые |
-| 20 | dirty / not git | commit/stash |
+| 20 | dirty / not git | дерево всё ещё грязное / не git — пройти §1a или инициализировать репо |
 | 21 | docker | собрать образ |
 | 22 | openrouter | ключ / rate limit |
 | 23 | bad CLI/task.md | починить секции task.md |
@@ -124,7 +157,24 @@ set +a
 
 ### 5. После SUCCESS
 
-Кратко отчитайся: branch, commit, spent_usd, iterations. Предложи `git log` / `git show` в целевом репо. **Не** пушь без явной просьбы.
+Кратко отчитайся: `branch` (agent), `base_branch`, `commit` (deliverables на базе), `agent_commit` (полный на agent), spent_usd, iterations. Предложи `git log` / `git show` в целевом репо. **Не** пушь без явной просьбы.
+
+Два commit’а, затем автопереключение на базу:
+- `agent/task-*` — полный след: deliverables + служебное (`.agent/`, `.aider.chat.history.md`, …); ветка сохраняется для аудита, смотреть её не нужно;
+- базовая ветка (`master`/`main`/…) — **только** deliverables (+ `tests/acceptance_generated/` если был `--keep-tests`); HEAD после SUCCESS на базе.
+
+### 5a. Восстановить stash (обязательно, если §1a = stash)
+
+Если перед прогоном делали stash по выбору пользователя — **после** разбора результата (и при HITL/ошибке тоже) верни изменения:
+
+```bash
+cd "$TARGET_REPO"
+git stash pop
+# при конфликте — не потеряй stash: сообщи пользователю, покажи conflict files, оставь stash в списке
+```
+
+Делай это на той ветке, где оказался HEAD после `agent-run` (обычно база после SUCCESS). Сообщи, что локальные незакоммиченные файлы восстановлены.  
+Если stash не делали — ничего не pop’ай.
 
 ## Чего не делать
 
@@ -132,6 +182,9 @@ set +a
 - Не запускать Aider на хосте напрямую — только через Shortleash CLI `agent-run` (песочница + RO acceptance).
 - Не реализовывать задачу руками, если пользователь просил агента.
 - Не коммитить `.env` / ключи.
+- Не хардкодить в скилле/доках/правилах абсолютные пути машины (`/home/…`, `/Users/…`); только `$HOME`, `$SHORTLEASH_HOME`, `$TARGET_REPO`, обход вверх от скилла.
+- Не stash/commit грязного дерева молча — только после явного выбора пользователя (§1a).
+- Не забывать `git stash pop` в конце, если в §1a выбрали stash.
 
 ## Env reference
 

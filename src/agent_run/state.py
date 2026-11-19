@@ -17,6 +17,7 @@ class RunState:
     version: int = 1
     task_id: str = ""
     branch: str = ""
+    base_branch: str = ""
     base_sha: str = ""
     phase: str = "init"
     iteration: int = 0

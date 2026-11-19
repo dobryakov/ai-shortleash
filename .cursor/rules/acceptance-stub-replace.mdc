@@ -1,0 +1,10 @@
+---
+description: Test Architect must replace stub; pending name alone is not fatal if real tests exist
+alwaysApply: true
+---
+
+# Acceptance stub detection
+
+Root cause (2026-11-19): Test Architect often kept `def test_acceptance_pending` while also adding real tests → HITL `tests_not_runnable` / "acceptance stub not replaced".
+
+Treat as stub only when `not generated yet` remains, or when `test_acceptance_pending` is the only test. Prompt must still require deleting/renaming the stub name.

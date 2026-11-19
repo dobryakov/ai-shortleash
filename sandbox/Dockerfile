@@ -3,7 +3,7 @@ FROM python:3.12-slim-bookworm
 LABEL org.agent-run.aider-version="0.86.1"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git bash ca-certificates \
+    && apt-get install -y --no-install-recommends git bash ca-certificates php-cli \
     && rm -rf /var/lib/apt/lists/*
 
 # Pin aider for reproducibility

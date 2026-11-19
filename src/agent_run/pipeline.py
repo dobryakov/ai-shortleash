@@ -42,7 +42,8 @@ class Pipeline:
         self.client = OpenRouterClient()
         self.task: TaskDoc | None = None
         self.state = RunState()
-        self.commit_sha: str | None = None
+        self.commit_sha: str | None = None  # deliverables commit on base branch
+        self.agent_commit_sha: str | None = None  # full commit on agent/task-*
 
     def run(self) -> int:
         try:
@@ -73,6 +74,7 @@ class Pipeline:
         git_ops.ensure_clean(self.project)
         self.task = load_task(self.task_path)
         slug = git_ops.slugify(self.task_path.name)
+        base_branch = git_ops.current_branch(self.project)
         base_sha = git_ops.head_sha(self.project)
         branch = git_ops.create_branch(self.project, slug)
         git_ops.ensure_excludes(self.project)
@@ -84,6 +86,7 @@ class Pipeline:
         self.state = RunState(
             task_id=slug,
             branch=branch,
+            base_branch=base_branch,
             base_sha=base_sha,
             phase="init",
             max_iter=self.max_iter,
@@ -93,7 +96,10 @@ class Pipeline:
             model_profile=self.profile.name,
         )
         self.store.save(self.state)
-        print(f"Init: branch={branch} baseline_usage=${baseline:.4f}", file=sys.stderr)
+        print(
+            f"Init: branch={branch} base={base_branch} baseline_usage=${baseline:.4f}",
+            file=sys.stderr,
+        )
 
     # --- preflight ---
 
@@ -180,7 +186,9 @@ class Pipeline:
             "Write executable acceptance tests for EVERY acceptance criterion.\n"
             "Only edit files under tests/acceptance_generated/.\n"
             "Do NOT edit .agent/run_tests.sh (the host owns it).\n"
-            "Do NOT implement product code.\n\n"
+            "Do NOT implement product code.\n"
+            "IMPORTANT: fully replace the stub — delete or rename "
+            "`test_acceptance_pending`. That name must not remain in the file.\n\n"
             f"STACK hint: {stack}\n\n"
             f"{self.task.raw}\n",
             encoding="utf-8",
@@ -335,11 +343,20 @@ class Pipeline:
         raise HitlError("max_iter_exceeded", f"max_iter={self.max_iter}")
 
     def _acceptance_still_stub(self) -> bool:
+        import re
+
         path = self.project / "tests" / "acceptance_generated" / "test_acceptance.py"
         if not path.is_file():
             return True
         text = path.read_text(encoding="utf-8")
-        return "test_acceptance_pending" in text or "not generated yet" in text
+        if "not generated yet" in text:
+            return True
+        # Leftover pending name is OK only when other real tests already exist.
+        test_names = re.findall(r"^def (test_\w+)\s*\(", text, flags=re.M)
+        others = [n for n in test_names if n != "test_acceptance_pending"]
+        if "def test_acceptance_pending" in text and not others:
+            return True
+        return False
 
     def _write_run_tests_sh(self, path: Path, stack: str) -> None:
         # Use ${PYTHONPATH:-} — plain $PYTHONPATH breaks under `set -u`.
@@ -351,7 +368,9 @@ class Pipeline:
                 "export PYTHONPATH=\"/workspace${PYTHONPATH:+:$PYTHONPATH}\"\n"
                 "export PYTHONDONTWRITEBYTECODE=1\n"
                 "pytest -q tests/acceptance_generated\n"
-                "pytest -q tests --ignore=tests/acceptance_generated\n"
+                # pytest exit 5 = no tests collected; fine when project has only acceptance.
+                "pytest -q tests --ignore=tests/acceptance_generated || {"
+                " ec=$?; [[ $ec -eq 5 ]] || exit $ec; }\n"
             )
         else:
             body = (
@@ -365,13 +384,25 @@ class Pipeline:
         path.chmod(0o755)
 
     def _guess_editable_files(self) -> list[str]:
+        import re
+
         candidates: list[str] = []
-        for pattern in ("*.py", "src/**/*.py", "lib/**/*.py"):
+        for pattern in ("*.py", "*.php", "src/**/*.py", "lib/**/*.py"):
             for path in self.project.glob(pattern):
                 rel = path.relative_to(self.project).as_posix()
                 if rel.startswith("tests/") or rel.startswith(".agent/"):
                     continue
                 candidates.append(rel)
+        # Seed files named in the task (e.g. `hello.php`) so Aider can edit them.
+        if self.task:
+            for name in re.findall(r"`([A-Za-z0-9_./-]+\.(?:py|php))`", self.task.raw):
+                if name.startswith("tests/") or name.startswith(".agent/"):
+                    continue
+                path = self.project / name
+                if not path.exists():
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("", encoding="utf-8")
+                candidates.append(name)
         # Always allow creating/editing a simple module if empty project
         if not candidates:
             main = self.project / "greet.py"
@@ -421,18 +452,40 @@ class Pipeline:
 
         if not self.keep_tests:
             self._rm_tree(self.project / "tests" / "acceptance_generated")
-        self._rm_tree(self.store.agent_dir)
-        # Host-writable junk from pytest/aider (ignored by git, but keep tree tidy).
+        # Keep .agent/ and .aider.chat.history.md on the agent branch (service trail).
         for junk in (".pytest_cache", "__pycache__"):
-            self._rm_tree(self.project / junk)
+            self._rm_path(self.project / junk)
+        for junk_name in git_ops.AIDER_COMMIT_JUNK:
+            self._rm_path(self.project / junk_name)
         git_ops.remove_excludes(self.project)
 
-        msg = f"agent: {self.state.task_id} (spent=${self.state.spent_usd:.4f}, iters={self.state.iteration})"
-        self.commit_sha = git_ops.commit_all(self.project, msg)
+        msg = (
+            f"agent: {self.state.task_id} "
+            f"(spent=${self.state.spent_usd:.4f}, iters={self.state.iteration})"
+        )
+        self.agent_commit_sha = git_ops.commit_agent_branch(
+            self.project, msg, keep_tests=self.keep_tests
+        )
+        deliverable_msg = (
+            f"agent: {self.state.task_id} deliverables "
+            f"(spent=${self.state.spent_usd:.4f}, iters={self.state.iteration})"
+        )
+        self.commit_sha = git_ops.promote_deliverables_to_base(
+            self.project,
+            base_branch=self.state.base_branch,
+            agent_branch=self.state.branch,
+            base_sha=self.state.base_sha,
+            keep_tests=self.keep_tests,
+            message=deliverable_msg,
+            leave_on_base=True,
+        )
         self.state.phase = "done"
         self.state.status = "success"
-        # state dir removed — skip save
-        print(f"Committed {self.commit_sha}", file=sys.stderr)
+        print(
+            f"Merged deliverables into {self.state.base_branch} @ {self.commit_sha}; "
+            f"audit trail on {self.state.branch} @ {self.agent_commit_sha}",
+            file=sys.stderr,
+        )
 
     def _handle_hitl(self, exc: HitlError) -> None:
         print(str(exc), file=sys.stderr)
@@ -453,10 +506,12 @@ class Pipeline:
         report = {
             "status": status,
             "branch": self.state.branch,
+            "base_branch": self.state.base_branch or None,
             "iterations": self.state.iteration,
             "spent_usd": round(self.state.spent_usd, 6),
             "hitl_reason": hitl_reason or self.state.hitl_reason,
             "commit": self.commit_sha,
+            "agent_commit": self.agent_commit_sha,
         }
         print(json.dumps(report, ensure_ascii=False))
 
@@ -468,12 +523,15 @@ class Pipeline:
         except Exception:  # noqa: BLE001
             pass
 
-    def _rm_tree(self, path: Path) -> None:
-        """Remove a directory tree; fall back to a root container if host lacks perms."""
+    def _rm_path(self, path: Path) -> None:
+        """Remove a file or directory; fall back to a root container if host lacks perms."""
         if not path.exists():
             return
         try:
-            shutil.rmtree(path)
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
             return
         except PermissionError:
             pass
@@ -496,4 +554,10 @@ class Pipeline:
             text=True,
         )
         if path.exists():
-            shutil.rmtree(path)
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+
+    def _rm_tree(self, path: Path) -> None:
+        self._rm_path(path)

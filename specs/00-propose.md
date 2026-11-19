@@ -303,13 +303,19 @@ Host запускает в контейнере `.agent/run_tests.sh`.
 
 ### 8.1. SUCCESS
 
-1. Финальный poll usage → записать `spent_usd` в отчёт (отзыва ключа нет).
+1. Финальный poll usage → записать `spent_usd` в отчёт (отдельного ключа нет).
 2. Если не `--keep-tests`: удалить `tests/acceptance_generated/`.
-3. Удалить `.agent/` всегда.
+3. Убрать шум (`.pytest_cache`, `__pycache__`, `.aider.input.history`, tags cache).
+   **Оставить** на agent-ветке служебное: `.agent/`, `.aider.chat.history.md`.
 4. Убрать добавленные строки из `.git/info/exclude` (только те, что оркестратор добавлял).
-5. `git add -A` (осмысленные изменения продукта) + commit на текущей ветке.  
+5. Commit на `agent/task-*`: deliverables + служебные файлы.
    Message: `agent: <slug> (spent=$X.XX, iters=N)`.
-6. Stdout: human summary + JSON-строка (§5.5), exit `0`.
+6. Promote на базовую ветку (с которой стартовали): только deliverables
+   (+ acceptance при `--keep-tests`). Служебные пути не копировать.
+   Message: `agent: <slug> deliverables (spent=$X.XX, iters=N)`.
+   После promote HEAD остаётся на базовой ветке (автомерж deliverables; agent-ветка сохраняется для аудита).
+7. Stdout: JSON (`commit` = SHA на базе, `agent_commit` = SHA на agent, `base_branch`), exit `0`.
+
 
 ### 8.2. HITL
 

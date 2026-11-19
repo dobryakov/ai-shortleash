@@ -1,0 +1,12 @@
+---
+description: Auto-promote deliverables to base; service files stay on agent/task-*
+alwaysApply: true
+---
+
+# Agent branch vs base deliverables
+
+After SUCCESS:
+- Commit full trail on `agent/task-*` (product + `.agent/` + `.aider.chat.history.md`)
+- Auto-promote **only** deliverables onto the start/base branch (`--keep-tests` includes acceptance)
+- Leave HEAD on the base branch — no manual merge or branch browsing
+- Keep `agent/task-*` for audit; do not delete it automatically

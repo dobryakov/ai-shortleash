@@ -1,0 +1,10 @@
+---
+description: Do not treat host-seeded acceptance stubs as the project stack
+alwaysApply: true
+---
+
+# Acceptance stubs vs stack detect
+
+Root cause (2026-11-19): `_test_architect` writes `tests/acceptance_generated/*.py` before `detect_stack()`, so empty/PHP projects were classified as `python`. `run_tests.sh` then ran a second `pytest` over empty `tests/` → exit 5 ("no tests ran") → verify always failed after product code was already correct (`max_iter_exceeded`).
+
+Ignore `tests/acceptance_generated/` in stack detection; treat pytest exit 5 on the project-tests pass as success.

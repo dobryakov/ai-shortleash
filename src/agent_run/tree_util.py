@@ -31,7 +31,15 @@ def project_tree(root: Path, max_depth: int = 4) -> str:
 def detect_stack(project: Path) -> str:
     if (project / "pyproject.toml").exists() or (project / "pytest.ini").exists():
         return "python"
-    if any(project.glob("tests/**/*.py")) or any(project.glob("test_*.py")):
+
+    def _is_project_python_test(path: Path) -> bool:
+        rel = path.relative_to(project).as_posix()
+        # Host-seeded acceptance stubs must not force the "python" stack.
+        return not rel.startswith("tests/acceptance_generated/")
+
+    if any(_is_project_python_test(p) for p in project.glob("tests/**/*.py")) or any(
+        project.glob("test_*.py")
+    ):
         return "python"
     if (project / "package.json").exists():
         return "node"
