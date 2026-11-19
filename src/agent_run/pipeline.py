@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -348,6 +349,7 @@ class Pipeline:
                 "set -euo pipefail\n"
                 "cd /workspace\n"
                 "export PYTHONPATH=\"/workspace${PYTHONPATH:+:$PYTHONPATH}\"\n"
+                "export PYTHONDONTWRITEBYTECODE=1\n"
                 "pytest -q tests/acceptance_generated\n"
                 "pytest -q tests --ignore=tests/acceptance_generated\n"
             )
@@ -356,6 +358,7 @@ class Pipeline:
                 "#!/usr/bin/env bash\n"
                 "set -euo pipefail\n"
                 "cd /workspace\n"
+                "export PYTHONDONTWRITEBYTECODE=1\n"
                 "pytest -q tests/acceptance_generated\n"
             )
         path.write_text(body, encoding="utf-8")
@@ -417,11 +420,11 @@ class Pipeline:
         self.store.save(self.state)
 
         if not self.keep_tests:
-            acc = self.project / "tests" / "acceptance_generated"
-            if acc.exists():
-                shutil.rmtree(acc)
-        if self.store.agent_dir.exists():
-            shutil.rmtree(self.store.agent_dir)
+            self._rm_tree(self.project / "tests" / "acceptance_generated")
+        self._rm_tree(self.store.agent_dir)
+        # Host-writable junk from pytest/aider (ignored by git, but keep tree tidy).
+        for junk in (".pytest_cache", "__pycache__"):
+            self._rm_tree(self.project / junk)
         git_ops.remove_excludes(self.project)
 
         msg = f"agent: {self.state.task_id} (spent=${self.state.spent_usd:.4f}, iters={self.state.iteration})"
@@ -464,3 +467,33 @@ class Pipeline:
             (log_dir / f"{phase}-{n}.txt").write_text(text[-100_000:], encoding="utf-8")
         except Exception:  # noqa: BLE001
             pass
+
+    def _rm_tree(self, path: Path) -> None:
+        """Remove a directory tree; fall back to a root container if host lacks perms."""
+        if not path.exists():
+            return
+        try:
+            shutil.rmtree(path)
+            return
+        except PermissionError:
+            pass
+        rel = path.resolve().relative_to(self.project.resolve()).as_posix()
+        # docker_runner runs as host UID; root-owned leftovers need an explicit root rm.
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{self.project.resolve()}:/workspace:rw",
+                self.docker.image,
+                "rm",
+                "-rf",
+                f"/workspace/{rel}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if path.exists():
+            shutil.rmtree(path)

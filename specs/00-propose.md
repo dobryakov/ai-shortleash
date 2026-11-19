@@ -356,7 +356,7 @@ Host запускает в контейнере `.agent/run_tests.sh`.
 ```yaml
 profiles:
   default:
-    cheap: openai/gpt-4o-mini
+    cheap: ~deepseek/deepseek-flash-latest
     strong: openai/gpt-4o-mini
     judge: google/gemini-2.5-flash
     coder_temperature: 0.1

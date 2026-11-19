@@ -48,6 +48,9 @@ class DockerRunner:
     ) -> ContainerResult:
         self.ensure_image()
         project = project.resolve()
+        # Match host UID so bind-mounted artifacts (__pycache__, .pytest_cache,
+        # .aider*) are deletable by the host during cleanup — root-owned leftovers
+        # previously caused PermissionError on shutil.rmtree.
         cmd = [
             "docker",
             "run",
@@ -55,6 +58,8 @@ class DockerRunner:
             "--memory=2g",
             "--cpus=1.5",
             "--network=bridge",
+            "-u",
+            f"{os.getuid()}:{os.getgid()}",
             "-w",
             workdir,
             "-v",
@@ -76,6 +81,8 @@ class DockerRunner:
         merged_env = {
             "OPENROUTER_API_KEY": os.environ.get("OPENROUTER_API_KEY", ""),
             "HOME": "/tmp",
+            # Avoid root/host-owned __pycache__ under the bind mount.
+            "PYTHONDONTWRITEBYTECODE": "1",
         }
         if env:
             merged_env.update(env)

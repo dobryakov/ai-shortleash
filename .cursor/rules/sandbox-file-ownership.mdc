@@ -1,0 +1,10 @@
+---
+description: Sandbox must not leave root-owned files on the bind-mounted project
+alwaysApply: true
+---
+
+# Sandbox bind-mount ownership
+
+Root cause: Docker sandbox ran as root and wrote `__pycache__` / `.pytest_cache` / `.aider*` into the project bind mount. Host cleanup (`shutil.rmtree` of `tests/acceptance_generated`) then failed with `Permission denied` after Spec Judge PASSED → exit 30 INTERNAL, no commit.
+
+Always run the sandbox as the host UID/GID (`docker run -u $(id -u):$(id -g)`), set `PYTHONDONTWRITEBYTECODE=1`, and keep a root-container fallback for deleting leftover root-owned trees.

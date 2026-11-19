@@ -18,7 +18,7 @@ class ModelProfile:
 DEFAULT_PROFILE = ModelProfile(
     name="default",
     # Prefer currently listed OpenRouter slugs (avoid retired / rate-limited IDs).
-    cheap="openai/gpt-4o-mini",
+    cheap="~deepseek/deepseek-flash-latest",
     strong="openai/gpt-4o-mini",
     judge="google/gemini-2.5-flash",
     coder_temperature=0.1,

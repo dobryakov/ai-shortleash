@@ -130,3 +130,9 @@ Full design notes: [`specs/00-propose.md`](specs/00-propose.md).
 ## Status
 
 Early MVP. Expect sharp edges around model availability on OpenRouter, non-Python repos, and network hardening of the sandbox. Contributions and issue reports welcome once the repo is public.
+
+## License
+
+Shortleash is released under the [MIT License](LICENSE).
+
+The coder loop is built on [Aider](https://github.com/Aider-AI/aider) ([aider.chat](https://aider.chat/)), which is licensed under the [Apache License 2.0](https://github.com/Aider-AI/aider/blob/main/LICENSE.txt).

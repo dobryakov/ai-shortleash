@@ -7,4 +7,4 @@ alwaysApply: true
 
 Root cause: `anthropic/claude-3.5-sonnet` returns 404 on OpenRouter (retired). Aider then burns iterations without edits.
 
-Prefer currently listed OpenRouter slugs in `models.py` defaults (e.g. `deepseek/deepseek-chat`, `google/gemini-2.0-flash-001`). Verify before pinning expensive models.
+Prefer currently listed OpenRouter slugs in `models.py` defaults (e.g. `~deepseek/deepseek-flash-latest`, `google/gemini-2.5-flash`). Verify before pinning expensive models.
