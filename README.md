@@ -26,8 +26,8 @@ MVP stack focus: **Python / pytest**. Other stacks are not fully supported yet.
 ## Install
 
 ```bash
-git clone https://github.com/<you>/shortleash.git
-cd shortleash
+git clone https://github.com/dobryakov/ai-shortleash.git
+cd ai-shortleash
 
 python3 -m venv .venv
 source .venv/bin/activate
