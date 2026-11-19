@@ -1,8 +1,12 @@
 # Техническая спецификация: Autonomous TDD Runner (`agent-run`)
 
 Статус: **design-ready draft** (можно реализовывать MVP по этой спеке)  
-Версия: **0.2**  
+Версия: **0.3**  
 Связанные артефакты: `fixtures/smoke-repo/` (эталонный репозиторий для AC; создаётся на этапе реализации)
+
+### Решение MVP (2026-03-19)
+
+**Key management отложен.** Per-task ключи через OpenRouter Management/Provisioning API **не** входят в MVP. Используется один `OPENROUTER_API_KEY` + soft budget на стороне оркестратора (§6.1, §9.1). Жёсткие лимитированные ключи — post-MVP.
 
 ---
 
@@ -12,13 +16,13 @@ CLI-утилита для Linux-сервера: полностью автоно�
 
 Приоритеты (в порядке убывания при конфликте):
 
-1. **Контроль стоимости** — дешёвые модели через OpenRouter, жёсткий per-task budget.
+1. **Контроль стоимости** — дешёвые модели через OpenRouter; в MVP — soft per-task budget (§9.1).
 2. **Изоляция** — всё исполнение кода и Aider только в Docker.
 3. **Anti-reward-hacking** — сгенерированные acceptance-тесты физически read-only для Coder.
 4. **Предсказуемые сбои** — при неоднозначности / бюджете / тупике → HITL, без «тихого» успеха.
 5. **Минимум участия человека** — HITL только в нештатных ситуациях из §12.
 
-Вне скоупа MVP: мульти-агентная оркестрация, UI, параллельные задачи в одном репо, авто-PR в remote, поддержка не-git проектов.
+Вне скоупа MVP: OpenRouter Management/Provisioning (выпуск/отзыв лимитированных ключей), мульти-агентная оркестрация, UI, параллельные задачи в одном репо, авто-PR в remote, поддержка не-git проектов.
 
 ---
 
@@ -27,9 +31,9 @@ CLI-утилита для Linux-сервера: полностью автоно�
 | Компонент | Выбор |
 |-----------|--------|
 | Host Orchestrator | Python 3.11+ |
-| Редактор кода в sandbox | Aider (headless: `--yes-always --no-auto-commits`) |
+| Редактор кода в sandbox | Aider (headless: `--yes --no-auto-commits --no-git`) |
 | Изоляция | Docker Engine (Docker CLI или Docker SDK for Python) |
-| LLM | OpenRouter: Provisioning API (лимитированные ключи) + Chat Completions |
+| LLM | OpenRouter Chat Completions (+ `GET /api/v1/key` для soft budget). Management API — post-MVP |
 | VCS | Git (целевой проект **обязан** быть git-репозиторием) |
 
 Базовый образ sandbox: `dev-agent-sandbox:<semver>` (пин версии оркестратором; `latest` только для локальной разработки образа).
@@ -54,7 +58,7 @@ agent-run \
 |------|---------|----------|
 | `--project` | — | Путь к git-репозиторию |
 | `--task` | — | Markdown: задача, ограничения, критерии приёмки |
-| `--budget` | `0.50` | Макс. расход USD на задачу (лимит временного ключа) |
+| `--budget` | `0.50` | Макс. расход USD на задачу (soft limit оркестратора, §9.1) |
 | `--max-iter` | `8` | Макс. итераций Coder Loop (Фаза 2), без учёта попыток Test Architect |
 | `--keep-tests` | `false` | Не удалять `tests/acceptance_generated/` перед финальным коммитом |
 | `--notify` | off | Канал HITL/статуса (`telegram` — опционально, см. §14) |
@@ -73,7 +77,7 @@ agent-run \
 
 - валидация CLI и чистоты git;
 - создание ветки `agent/task-<slug>`;
-- выпуск / опрос / отзыв временного OpenRouter-ключа;
+- чтение `OPENROUTER_API_KEY`, baseline usage и soft budget poll (`GET /api/v1/key`);
 - запись `.git/info/exclude`;
 - вызов Chat Completions для Pre-flight и Spec Judge (с хоста);
 - запуск/остановка Docker-контейнеров;
@@ -129,6 +133,7 @@ Pre-flight (§7.1) отвергает файл без этих секций ил
   "iteration": 0,
   "max_iter": 8,
   "budget_usd": 0.5,
+  "usage_baseline_usd": 0.0,
   "spent_usd": 0.0,
   "model_profile": "default",
   "current_model": "provider/model-slug",
@@ -196,7 +201,7 @@ Host обновляет файл после каждого значимого ш
    Исключение: не требуется чистота ignored-файлов.
 3. Вычислить `slug` из имени task-файла (kebab-case, max 40 символов) → ветка `agent/task-<slug>`. Если ветка существует — суффикс `-YYYYmmdd-HHMMSS`.
 4. Создать и checkout ветку от текущего `HEAD`.
-5. OpenRouter Provisioning API: создать ключ с `limit` = `--budget` (USD). Сохранить id ключа в памяти процесса / state (не в git).
+5. Проверить наличие `OPENROUTER_API_KEY` в окружении хоста. `GET https://openrouter.ai/api/v1/key` → сохранить `usage_baseline_usd` (= текущий usage ключа) в state. Ключ **не** создаётся и **не** ротируется в MVP.
 6. Добавить в `.git/info/exclude` (если ещё нет):
    - `.agent/`
    - `tests/acceptance_generated/`
@@ -253,15 +258,16 @@ Host запускает в контейнере `.agent/run_tests.sh`.
 
 Цикл `iteration = 1..max_iter`:
 
-1. **Бюджет:** `GET` usage временного ключа. Если `spent >= budget` → HITL `budget_exceeded`.
+1. **Бюджет (soft):** см. §9.1. Если `spent_usd >= budget` → HITL `budget_exceeded` (проверка также перед Test Architect и Spec Judge).
 2. **Модель:** по каскаду profile (§9); при `same_error_streak >= 2` — форс-эскалация класса модели.
 3. **Контейнер Coder:**
    - `/workspace` rw;
    - overlay RO: `/workspace/tests/acceptance_generated`, `/workspace/.agent` (включая `run_tests.sh`);
    - `.env` → mount `/dev/null` ro (если файл есть);
-   - не пробрасывать SSH keys, Docker socket, cloud creds;
-   - Aider **без** write-доступа к RO-путям (дополнительно allowlist всех путей кроме RO).
-4. Промпт: Task + Constraints + хвост ошибки предыдущей итерации (до 3000 символов) + issues от Spec Judge (если были).
+   - не пробрасывать SSH keys, Docker socket, cloud creds (кроме `OPENROUTER_API_KEY` в env контейнера для Aider);
+   - Aider **без** write-доступа к RO-путям (editable files передаются списком в argv; RO mount — главный барьер).
+4. Промпт: Task + Constraints + хвост ошибки предыдущей итерации (до 3000 символов) + issues от Spec Judge (если были).  
+   Запуск: `aider --yes --no-auto-commits --no-git --message-file .agent/prompt.txt …`.
 5. **Verify:** снова `.agent/run_tests.sh` в контейнере.
    - exit ≠ 0 → MD5 от нормализованного хвоста (последние 3000 символов stdout+stderr; strip timestamps/pids). Если хеш == предыдущему → `same_error_streak++`, иначе `= 1`. Если `same_error_streak >= 3` **после** эскалации модели → HITL `stuck_loop`. Иначе следующая итерация.
    - exit == 0 → Фаза 3.
@@ -297,7 +303,7 @@ Host запускает в контейнере `.agent/run_tests.sh`.
 
 ### 8.1. SUCCESS
 
-1. Отозвать временный OpenRouter-ключ (best-effort; ошибка отзыва → warning в stderr, не FAIL).
+1. Финальный poll usage → записать `spent_usd` в отчёт (отзыва ключа нет).
 2. Если не `--keep-tests`: удалить `tests/acceptance_generated/`.
 3. Удалить `.agent/` всегда.
 4. Убрать добавленные строки из `.git/info/exclude` (только те, что оркестратор добавлял).
@@ -309,14 +315,31 @@ Host запускает в контейнере `.agent/run_tests.sh`.
 
 1. Сохранить `.agent/state.json` (`status=hitl`, reason/detail).
 2. **Не** удалять ветку и прогресс кода.
-3. Отозвать ключ (best-effort).
-4. `.agent/` **оставить** для диагностики; `tests/acceptance_generated/` оставить.
-5. Exit ≠ 0 по таблице §11.
-6. Коммит при HITL **не** создаётся автоматически (дерево может быть грязным — это ожидаемо).
+3. `.agent/` **оставить** для диагностики; `tests/acceptance_generated/` оставить.
+4. Exit ≠ 0 по таблице §11.
+5. Коммит при HITL **не** создаётся автоматически (дерево может быть грязным — это ожидаемо).
 
 ---
 
-## 9. Model profiles (без хардкода устаревающих slug в логике)
+## 9. Model profiles и бюджет
+
+### 9.1. Soft budget (MVP)
+
+Единый ключ: `OPENROUTER_API_KEY` (хост и sandbox).
+
+Перед каждым платным шагом и после него:
+
+1. `GET https://openrouter.ai/api/v1/key` → `usage` (USD).
+2. `spent_usd = usage - usage_baseline_usd`.
+3. Если `spent_usd >= budget_usd` → HITL `budget_exceeded`.
+
+Ограничения MVP (приемлемы):
+
+- лимит **не** enforced провайдером на границе задачи: возможен overshoot на один in-flight запрос;
+- параллельные `agent-run` на одном ключе искажают `spent_usd` (MVP: один прогон за раз);
+- Management API с `limit` на per-task key — **post-MVP**, без смены внешнего CLI (`--budget` останется).
+
+### 9.2. Model profiles (без хардкода устаревающих slug в логике)
 
 Оркестратор читает profile из конфига (`~/.config/agent-run/models.yaml` или `AGENT_RUN_MODELS_FILE`).
 
@@ -333,9 +356,9 @@ Host запускает в контейнере `.agent/run_tests.sh`.
 ```yaml
 profiles:
   default:
-    cheap: deepseek/deepseek-chat
-    strong: anthropic/claude-3.5-sonnet
-    judge: google/gemini-2.0-flash-001
+    cheap: openai/gpt-4o-mini
+    strong: openai/gpt-4o-mini
+    judge: google/gemini-2.5-flash
     coder_temperature: 0.1
 ```
 
@@ -344,11 +367,10 @@ profiles:
 - iters 1–3: `cheap`
 - iter ≥ 4 **или** `same_error_streak >= 2`: `strong`
 
-Рекомендуемый budget split (мягкий, для метрик; жёсткий лимит один на ключ):
+Рекомендуемый soft-split для метрик (не стоп-критерий):
 
-- Test Architect ≤ 40% бюджета
-- Coder+Judge — остальное  
-Превышение soft-split не останавливает задачу; останавливает только hard limit ключа.
+- Test Architect ≤ 40% `--budget`
+- Coder+Judge — остальное
 
 ---
 
@@ -362,8 +384,8 @@ profiles:
    - Egress: только 80/443 (и 53) через правила на хосте.
    - Запрет: `127.0.0.0/8`, link-local, RFC1918 хоста, metadata `169.254.169.254`, другие docker bridge.
    - IPv6: либо отключён в сети, либо те же deny-правила.
-5. OpenRouter вызовы Pre-flight/Judge/usage — **с хоста**, не из sandbox. Sandbox получает только временный ключ для Aider → OpenRouter (443).
-6. Секреты хоста не монтировать. Известные имена (`.env`, `.env.*`, `*.pem`) — mask через `/dev/null` ro при наличии.
+5. OpenRouter вызовы Pre-flight/Judge/usage — **с хоста**. Sandbox получает тот же `OPENROUTER_API_KEY` только в env (не через mount `.env`) для Aider → OpenRouter (443).
+6. Файлы секретов хоста не монтировать. Известные имена (`.env`, `.env.*`, `*.pem`) — mask через `/dev/null` ro при наличии.
 7. Нет Docker socket, нет `--privileged`, нет `SYS_ADMIN`.
 8. Запись в RO mount acceptance/`.agent` при Coder → ожидаемый errno; оркестратор не считает это «прогрессом».
 
@@ -383,7 +405,7 @@ profiles:
 | 16 | HITL: `preflight_invalid_response` / `judge_invalid_response` / `empty_diff` |
 | 20 | Грязное git-дерево / не git-репо |
 | 21 | Ошибка Docker / образа |
-| 22 | Ошибка OpenRouter provisioning / auth |
+| 22 | Ошибка OpenRouter auth / usage poll |
 | 23 | Невалидный CLI / task.md структура |
 | 30 | Внутренняя ошибка оркестратора |
 
@@ -401,7 +423,7 @@ profiles:
 | Тесты зелёные до написания кода и не усилены | `tests_already_green` | 15 |
 | Сломанный JSON Pre-flight/Judge после repair | `*_invalid_response` | 16 |
 
-При любом HITL: state сохранён, ветка с прогрессом оставлена, ключ отозван, понятное сообщение в stderr.
+При любом HITL: state сохранён, ветка с прогрессом оставлена, понятное сообщение в stderr.
 
 ---
 
@@ -430,7 +452,7 @@ docker pull registry.example/dev-agent-sandbox:0.1.0
 
 | Env | Назначение |
 |-----|------------|
-| `OPENROUTER_MANAGEMENT_KEY` | Provisioning API |
+| `OPENROUTER_API_KEY` | Единый ключ для Host (Completions + usage) и Aider в sandbox |
 | `AGENT_RUN_SANDBOX_IMAGE` | default image |
 | `AGENT_RUN_MODELS_FILE` | path к models.yaml |
 | `AGENT_RUN_TELEGRAM_BOT_TOKEN` / `AGENT_RUN_TELEGRAM_CHAT_ID` | если `--notify telegram` |
@@ -455,13 +477,13 @@ docker pull registry.example/dev-agent-sandbox:0.1.0
 Обязательные флаги:
 
 ```text
-aider --yes-always --no-auto-commits --no-git
+aider --yes --no-auto-commits --no-git --message-file .agent/prompt.txt
 ```
 
 - `--no-git`: коммиты только у Host.
-- Модель и API base/key: через env контейнера (`OPENROUTER_API_KEY` = временный ключ, `OPENAI_API_BASE` = OpenRouter compatible endpoint).
-- Промпт читается из файла / argv, сформированного Host.
-- Non-zero exit Aider при отсутствии изменений в allowlist → оркестратор передаёт stderr в следующий промпт (не HITL сразу).
+- Модель: OpenRouter slug через `--model openrouter/<slug>` (или эквивалент конфига Aider); `OPENROUTER_API_KEY` в env контейнера.
+- Editable files: явный список путей в argv; read-only контекст — `--read` при необходимости. Главный барьер против порчи acceptance — RO mount (§6.3).
+- Non-zero exit Aider при отсутствии изменений → оркестратор передаёт stderr в следующий промпт (не HITL сразу).
 - Версия Aider фиксируется в Dockerfile образа; Host при старте может проверить label `org.agent-run.aider-version`.
 
 ---
@@ -473,7 +495,7 @@ aider --yes-always --no-auto-commits --no-git
 | ID | Сценарий | Ожидание |
 |----|----------|----------|
 | AC1 | Чёткая задача на fixture | SUCCESS: ветка, commit, тесты проходили на Judge-входе, spent > 0 |
-| AC2 | `--budget 0.001` | HITL `budget_exceeded`, exit 11, до max-iter не доходит |
+| AC2 | `--budget 0.001` | после первого платного шага soft-check → HITL `budget_exceeded`, exit 11 (возможен небольшой overshoot одного запроса) |
 | AC3 | Coder пытается писать в `tests/acceptance_generated/` | запись блокируется OS (RO); прогон не SUCCESS из-за «исправленных» тестов |
 | AC4 | Заведомо невыполнимая зависимость (нет внешнего сервиса) | HITL `stuck_loop` или `max_iter_exceeded` до 10 итераций; exit 12 или 14 |
 | AC5 | Task без секции Acceptance Criteria | exit 23 или Pre-flight HITL 10 |
@@ -484,12 +506,13 @@ aider --yes-always --no-auto-commits --no-git
 ## 17. План реализации MVP (не часть рантайма)
 
 1. Host skeleton: CLI, state, exit codes, git init-branch.
-2. OpenRouter key lifecycle + budget poll.
-3. Docker runner + RO overlays + сеть.
-4. Фаза 1 (preflight + test architect + red check).
+2. OpenRouter: Completions + soft budget poll (`usage - baseline`); **без** Management API.
+3. Docker runner + RO overlays (+ сеть позже).
+4. Фаза 1 (preflight + test architect + red check), стек MVP: Python/pytest.
 5. Фаза 2 (coder loop + error hash).
 6. Фаза 3 (judge) + cleanup commit.
 7. Fixture repo + AC1–AC6 в CI.
+8. Post-MVP: per-task keys через Management API с hard `limit`.
 
 ---
 
@@ -499,3 +522,4 @@ aider --yes-always --no-auto-commits --no-git
 |--------|-----------|
 | 0.1 | Исходный черновик монолитом |
 | 0.2 | Нормализована структура; контракты JSON/exit codes; Host vs Sandbox; model profiles; git/ops/Aider контракты; уточнены security и AC |
+| 0.3 | MVP без key management: один `OPENROUTER_API_KEY` + soft budget; Aider-флаги `--yes` / `--message-file`; Management API → post-MVP |

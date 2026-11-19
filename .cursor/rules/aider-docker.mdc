@@ -1,0 +1,10 @@
+---
+description: Aider in sandbox must not self-upgrade; use --no-check-update
+alwaysApply: true
+---
+
+# Aider in Docker
+
+Root cause: default Aider checks for updates and may run `pip install --upgrade`, then exit without applying edits (seen as empty stub tests + `tests_already_green`).
+
+Always pass `--no-check-update` (and prefer `--yes-always`). Do not allow write to system site-packages in the container for upgrades.

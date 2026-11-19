@@ -1,0 +1,10 @@
+---
+description: run_tests.sh must not expand unset PYTHONPATH under set -u
+alwaysApply: true
+---
+
+# run_tests.sh and `set -u`
+
+Root cause: generated `run_tests.sh` used `PYTHONPATH=...:$PYTHONPATH` with `set -u`, so verify failed with `PYTHONPATH: unbound variable` even when product code was correct → stuck_loop.
+
+Host-seeded `run_tests.sh` must avoid unset vars (`${PYTHONPATH:-}` or export only when needed). After Test Architect edits, optionally sanitize or prefer host template.

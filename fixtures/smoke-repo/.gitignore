@@ -1,0 +1,6 @@
+.aider*
+.agent/
+tests/acceptance_generated/
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,27 @@
+SUCCESS = 0
+
+HITL_AMBIGUOUS_TASK = 10
+HITL_BUDGET_EXCEEDED = 11
+HITL_STUCK_LOOP = 12
+HITL_TESTS_NOT_RUNNABLE = 13
+HITL_MAX_ITER = 14
+HITL_TESTS_ALREADY_GREEN = 15
+HITL_INVALID_LLM = 16
+
+DIRTY_OR_NOT_GIT = 20
+DOCKER_ERROR = 21
+OPENROUTER_ERROR = 22
+CLI_OR_TASK_INVALID = 23
+INTERNAL = 30
+
+HITL_REASON_TO_CODE = {
+    "ambiguous_task": HITL_AMBIGUOUS_TASK,
+    "budget_exceeded": HITL_BUDGET_EXCEEDED,
+    "stuck_loop": HITL_STUCK_LOOP,
+    "tests_not_runnable": HITL_TESTS_NOT_RUNNABLE,
+    "max_iter_exceeded": HITL_MAX_ITER,
+    "tests_already_green": HITL_TESTS_ALREADY_GREEN,
+    "preflight_invalid_response": HITL_INVALID_LLM,
+    "judge_invalid_response": HITL_INVALID_LLM,
+    "empty_diff": HITL_INVALID_LLM,
+}
