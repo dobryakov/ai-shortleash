@@ -7,4 +7,4 @@ alwaysApply: true
 
 Root cause: Ubuntu/Debian Python is externally managed (PEP 668); `pip install` to system fails.
 
-Always use `/home/ubuntu/aider-exp/.venv` (`python3 -m venv .venv`). Run tools via `.venv/bin/python` / `.venv/bin/pytest` / `.venv/bin/agent-run`.
+Always use the project-local `.venv` (`python3 -m venv .venv` from the Shortleash repo root). Run tools via `.venv/bin/python` / `.venv/bin/pytest` / `.venv/bin/agent-run`.
